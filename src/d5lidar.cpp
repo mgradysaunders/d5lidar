@@ -117,13 +117,13 @@ struct TaskView {
 struct PulseView {
   struct Sentinel {};
   bool operator==(Sentinel) const {
-    return pulseHeader.pulseIndex >= task->pulseCount;
+    return pulseHeader.pulseIndex >= pulseLimit;
   }
   bool operator!=(Sentinel) const { return not operator==(Sentinel()); }
   PulseView& operator*() noexcept { return *this; }
   PulseView& operator++() noexcept {
-    ++pulseHeader.pulseIndex;
-    if (pulseHeader.pulseIndex < task->pulseCount)
+    pulseHeader.pulseIndex += pulseIncrement;
+    if (pulseHeader.pulseIndex < pulseLimit)
       pulseHeader = binFile->loadPulseHeader(*task, pulseHeader.pulseIndex);
     waveformArray.clear();
     return *this;
@@ -214,6 +214,8 @@ struct PulseView {
   std::shared_ptr<BinFile> binFile = nullptr;
   BinFile::Task* task = nullptr;
   BinFile::PulseHeader pulseHeader;
+  size_t pulseLimit = 0;
+  size_t pulseIncrement = 1;
   std::vector<double> waveformArray;
 };
 
@@ -415,12 +417,34 @@ PYBIND11_MODULE(d5lidar, module) {
                 self.binFile,
                 self.task,
                 self.binFile->loadPulseHeader(*self.task, pulseIndex),
+                self.task->pulseCount,
+                1,
                 {}};
           })
+      .def(
+          "__getitem__",
+          [](TaskView& self, py::slice slice) {
+            py::ssize_t start = 0, stop = 0, step = 0, sliceLength = 0;
+            if (!slice.compute(
+                    self.task->pulseCount, &start, &stop, &step, &sliceLength))
+              throw py::error_already_set();
+            PulseView from = {
+                self.binFile,
+                self.task,
+                self.binFile->loadPulseHeader(*self.task, start),
+                size_t(stop),
+                size_t(step),
+                {}};
+            PulseView::Sentinel to;
+            return py::make_iterator(from, to);
+          })
       .def("__iter__", [](TaskView& self) {
-        PulseView from = {
-            self.binFile, self.task,
-            self.binFile->loadPulseHeader(*self.task, 0)};
+        PulseView from = {self.binFile,
+                          self.task,
+                          self.binFile->loadPulseHeader(*self.task, 0),
+                          self.task->pulseCount,
+                          1,
+                          {}};
         PulseView::Sentinel to;
         return py::make_iterator(from, to);
       });
