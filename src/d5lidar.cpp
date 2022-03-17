@@ -21,6 +21,7 @@ namespace py = pybind11;
 using namespace py::literals;
 
 #include "BinFile.h"
+#include "VoxelGrid.h"
 
 constexpr double speedOfLight = 299792458;
 
@@ -261,9 +262,33 @@ struct WaveformView {
     t = t - i0;
     return (1 - t) * waveform[i0] + t * waveform[i1];
   }
+  double intensitySum(double dist0, double dist1) const {
+    int n = waveform.size();
+    double pulseTime = pulse->pulseHeader.pulseTime;
+    double timeGate0 = pulse->pulseHeader.timeGateStart;  //- pulseTime;
+    double timeGate1 = pulse->pulseHeader.timeGateStop;   // - pulseTime;
+    double time0 = distanceToTime(dist0);
+    double time1 = distanceToTime(dist1);
+    time0 = std::max(timeGate0, std::min(time0, timeGate1));
+    time1 = std::max(timeGate0, std::min(time1, timeGate1));
+    double t0 = (time0 - timeGate0) / (timeGate1 - timeGate0) * n;
+    double t1 = (time1 - timeGate0) / (timeGate1 - timeGate0) * n;
+    int i00 = std::max(0, std::min(int(t0), n - 1));
+    int i01 = std::max(0, std::min(i00 + 1, n - 1));
+    int i10 = std::max(0, std::min(int(t0), n - 1));
+    int i11 = std::max(0, std::min(i10 + 1, n - 1));
+    t0 = t0 - i00;
+    t1 = t1 - i10;
+    double result = 0;
+    result += ((1 - t0) * waveform[i00] + t0 * waveform[i01]) * (1 - t0);
+    result += ((1 - t1) * waveform[i10] + t1 * waveform[i11]) * t1;
+    for (int i = i01; i <= i10; i++) result += waveform[i];
+    return result;
+  }
   Eigen::Vector3d pointAt(double dist) const {
     return rayOrigin + rayDirection * dist;
   }
+
   double smooth(int index) const {
     double numer = 0;
     double denom = 0;
@@ -337,6 +362,44 @@ struct WaveformView {
     printMember(stream, "rayDirection", PrintVector3d(rayDirection));
     stream << '\n';
     return stream.str();
+  }
+};
+
+struct VoxelGridReconstruction {
+  VoxelGrid grid;
+  py::array_t<double> scatteredPhotonsArray;
+  py::array_t<double> remainingPhotonsArray;
+  py::array_t<int> numWaveformsArray;
+
+  VoxelGridReconstruction(
+      Eigen::Vector3d minPoint,
+      Eigen::Vector3d maxPoint,
+      Eigen::Vector3i count) {
+    grid.bound.points[0] = minPoint.cast<float>();
+    grid.bound.points[1] = maxPoint.cast<float>();
+    grid.count = count;
+    scatteredPhotonsArray = py::array_t<double>(
+        {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
+    remainingPhotonsArray = py::array_t<double>(
+        {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
+    numWaveformsArray = py::array_t<int>(
+        {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
+  }
+
+  void addWaveform(WaveformView waveform) {
+    auto scatteredPhotons = scatteredPhotonsArray.mutable_unchecked<3>();
+    auto remainingPhotons = remainingPhotonsArray.mutable_unchecked<3>();
+    auto numWaveforms = numWaveformsArray.mutable_unchecked<3>();
+    auto org = waveform.rayOrigin.cast<float>();
+    auto dir = waveform.rayDirection.cast<float>();
+    grid.traverse(org, dir, [&](float tmin, float tmax, Eigen::Vector3i index) {
+      int i = index[0];
+      int j = index[1];
+      int k = index[2];
+      scatteredPhotons(i, j, k) += waveform.intensitySum(tmin, tmax);
+      remainingPhotons(i, j, k) += waveform.intensitySum(tmin, INFINITY);
+      numWaveforms(i, j, k) += 1;
+    });
   }
 };
 
@@ -428,13 +491,12 @@ PYBIND11_MODULE(d5lidar, module) {
             if (!slice.compute(
                     self.task->pulseCount, &start, &stop, &step, &sliceLength))
               throw py::error_already_set();
-            PulseView from = {
-                self.binFile,
-                self.task,
-                self.binFile->loadPulseHeader(*self.task, start),
-                size_t(stop),
-                size_t(step),
-                {}};
+            PulseView from = {self.binFile,
+                              self.task,
+                              self.binFile->loadPulseHeader(*self.task, start),
+                              size_t(stop),
+                              size_t(step),
+                              {}};
             PulseView::Sentinel to;
             return py::make_iterator(from, to);
           })
@@ -605,4 +667,21 @@ PYBIND11_MODULE(d5lidar, module) {
         return py::array_t<double>(
             py::ssize_t(self.waveform.size()), self.waveform.data(), obj);
       });
+
+  py::class_<VoxelGridReconstruction>(module, "VoxelGridReconstruction")
+      .def(
+          py::init<Eigen::Vector3d, Eigen::Vector3d, Eigen::Vector3i>(),
+          "minPoint"_a, "maxPoint"_a, "count"_a)
+      .def_readonly(
+          "scatteredPhotons", &VoxelGridReconstruction::scatteredPhotonsArray,
+          "The total number of scattered photons at the time of intersection "
+          "with a given voxel.")
+      .def_readonly(
+          "remainingPhotons", &VoxelGridReconstruction::remainingPhotonsArray,
+          "The total number of remaining photons at the time of intersection "
+          "with a given voxel.")
+      .def_readonly(
+          "numWaveforms", &VoxelGridReconstruction::numWaveformsArray,
+          "The number of waveforms that have intersected a given voxel.")
+      .def("addWaveform", &VoxelGridReconstruction::addWaveform);
 }
