@@ -158,22 +158,25 @@ struct PulseView {
     Eigen::Vector3d rayOrigin = {0, 0, 0};
     Eigen::Map<Eigen::Matrix4d> receiverToPlatform(
         &pulseHeader.receiverMountToPlatform[0]);
-    rayOrigin = receiverToPlatform.block<3, 3>(0, 0) * rayOrigin;
+    rayOrigin = receiverToPlatform.block<3, 3>(0, 0) * rayOrigin +
+                receiverToPlatform.col(3).head(3);
+    rayOrigin = rotateYZX(pulseHeader.platformRotation) * rayOrigin;
     rayOrigin += Eigen::Map<Eigen::Vector3d>(&pulseHeader.platformLocation[0]);
     return rayOrigin;
   }
   Eigen::Vector3d rayDirection(int x, int y) {
     const auto& fileHeader = binFile->fileHeader;
+    int xCount = pulse->binFile->fileHeader.xDetectorCount;
+    int yCount = pulse->binFile->fileHeader.yDetectorCount;
     Eigen::Vector3d rayDirection = {
-        fileHeader.xDetectorPitch * x + fileHeader.xArrayOffset,
-        fileHeader.yDetectorPitch * y + fileHeader.yArrayOffset,
+        fileHeader.xDetectorPitch * (x - xCount / 2) + fileHeader.xArrayOffset,
+        fileHeader.yDetectorPitch * (y - yCount / 2) + fileHeader.yArrayOffset,
         -task->focalLength * 1e3  // mm to micron
     };
     rayDirection = rotateYZX(pulseHeader.receiverMountPointing) * rayDirection;
     Eigen::Map<Eigen::Matrix4d> receiverToPlatform(
         &pulseHeader.receiverMountToPlatform[0]);
-    rayDirection = receiverToPlatform.block<3, 3>(0, 0) * rayDirection +
-                   receiverToPlatform.col(3).head(3);
+    rayDirection = receiverToPlatform.block<3, 3>(0, 0) * rayDirection;
     rayDirection = rotateYZX(pulseHeader.platformRotation) * rayDirection;
     rayDirection.normalize();
     return rayDirection;
@@ -262,28 +265,26 @@ struct WaveformView {
     t = t - i0;
     return (1 - t) * waveform[i0] + t * waveform[i1];
   }
-  double intensitySum(double dist0, double dist1) const {
+  double cumulativeIntensityAt(double dist) const {
     int n = waveform.size();
     double pulseTime = pulse->pulseHeader.pulseTime;
     double timeGate0 = pulse->pulseHeader.timeGateStart;  //- pulseTime;
     double timeGate1 = pulse->pulseHeader.timeGateStop;   // - pulseTime;
-    double time0 = distanceToTime(dist0);
-    double time1 = distanceToTime(dist1);
-    time0 = std::max(timeGate0, std::min(time0, timeGate1));
-    time1 = std::max(timeGate0, std::min(time1, timeGate1));
-    double t0 = (time0 - timeGate0) / (timeGate1 - timeGate0) * n;
-    double t1 = (time1 - timeGate0) / (timeGate1 - timeGate0) * n;
-    int i00 = std::max(0, std::min(int(t0), n - 1));
-    int i01 = std::max(0, std::min(i00 + 1, n - 1));
-    int i10 = std::max(0, std::min(int(t0), n - 1));
-    int i11 = std::max(0, std::min(i10 + 1, n - 1));
-    t0 = t0 - i00;
-    t1 = t1 - i10;
-    double result = 0;
-    result += ((1 - t0) * waveform[i00] + t0 * waveform[i01]) * (1 - t0);
-    result += ((1 - t1) * waveform[i10] + t1 * waveform[i11]) * t1;
-    for (int i = i01; i <= i10; i++) result += waveform[i];
+    double time = distanceToTime(dist);
+    if (not(time > timeGate0)) return 0;
+    if (not(time < timeGate1)) time = timeGate1;
+    double t = (time - timeGate0) / (timeGate1 - timeGate0) * n;
+    int i0 = std::max(0, std::min(int(t), n - 1));
+    int i1 = std::max(0, std::min(i0 + 1, n - 1));
+    t = t - i0;
+    double result =
+        (waveform[i0] + (1 - t) * waveform[i0] + t * waveform[i1]) * t * 0.5;
+    for (int i = 0; i < i0; i++)
+      result += (waveform[i] + waveform[i + 1]) * 0.5;
     return result;
+  }
+  double integratedIntensity(double dist0, double dist1) const {
+    return cumulativeIntensityAt(dist1) - cumulativeIntensityAt(dist0);
   }
   Eigen::Vector3d pointAt(double dist) const {
     return rayOrigin + rayDirection * dist;
@@ -396,9 +397,13 @@ struct VoxelGridReconstruction {
       int i = index[0];
       int j = index[1];
       int k = index[2];
-      scatteredPhotons(i, j, k) += waveform.intensitySum(tmin, tmax);
-      remainingPhotons(i, j, k) += waveform.intensitySum(tmin, INFINITY);
-      numWaveforms(i, j, k) += 1;
+      double R = waveform.integratedIntensity(tmin, INFINITY);
+      double S = waveform.integratedIntensity(tmin, tmax);
+      if (R > 0) {
+        scatteredPhotons(i, j, k) += std::fmin(S / R, 1.0);
+        remainingPhotons(i, j, k) += R;
+        numWaveforms(i, j, k) += 1;
+      }
     });
   }
 };
@@ -645,6 +650,10 @@ PYBIND11_MODULE(d5lidar, module) {
       .def(
           "intensityAtDistance", &WaveformView::intensityAt, "dist"_a,
           "Evaluate the intensity as a function of distance [m].")
+      .def(
+          "cumulativeIntensityAtDistance", &WaveformView::cumulativeIntensityAt,
+          "dist"_a,
+          "Evaluate the cumulative intensity as a function of distance [m].")
       .def(
           "pointAtDistance", &WaveformView::pointAt, "dist"_a,
           "Evaluate the points along the line of sight as a function of "

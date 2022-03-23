@@ -61,8 +61,12 @@ struct VoxelGrid {
   [[nodiscard]] Bound getVoxelBound(Vec3i index) const noexcept {
     Bound voxelBound;
     for (int i = 0; i < 3; i++) {
-      voxelBound.points[0][i] = float(index[i]) / count[i];
-      voxelBound.points[1][i] = float(index[i] + 1) / count[i];
+      float t0 = float(index[i]) / count[i];
+      float t1 = float(index[i] + 1) / count[i];
+      voxelBound.points[0][i] =
+          (1 - t0) * bound.points[0][i] + t0 * bound.points[1][i];
+      voxelBound.points[1][i] =
+          (1 - t1) * bound.points[0][i] + t1 * bound.points[1][i];
     }
     return voxelBound;
   }
