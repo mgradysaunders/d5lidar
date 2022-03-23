@@ -166,8 +166,8 @@ struct PulseView {
   }
   Eigen::Vector3d rayDirection(int x, int y) {
     const auto& fileHeader = binFile->fileHeader;
-    int xCount = pulse->binFile->fileHeader.xDetectorCount;
-    int yCount = pulse->binFile->fileHeader.yDetectorCount;
+    int xCount = fileHeader.xDetectorCount;
+    int yCount = fileHeader.yDetectorCount;
     Eigen::Vector3d rayDirection = {
         fileHeader.xDetectorPitch * (x - xCount / 2) + fileHeader.xArrayOffset,
         fileHeader.yDetectorPitch * (y - yCount / 2) + fileHeader.yArrayOffset,
