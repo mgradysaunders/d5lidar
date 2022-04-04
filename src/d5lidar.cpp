@@ -22,6 +22,7 @@ using namespace py::literals;
 
 #include "BinFile.h"
 #include "VoxelGrid.h"
+#include "WaveformHistory.h"
 
 constexpr double speedOfLight = 299792458;
 
@@ -268,8 +269,8 @@ struct WaveformView {
   double cumulativeIntensityAt(double dist) const {
     int n = waveform.size();
     double pulseTime = pulse->pulseHeader.pulseTime;
-    double timeGate0 = pulse->pulseHeader.timeGateStart;  //- pulseTime;
-    double timeGate1 = pulse->pulseHeader.timeGateStop;   // - pulseTime;
+    double timeGate0 = pulse->pulseHeader.timeGateStart;
+    double timeGate1 = pulse->pulseHeader.timeGateStop;  
     double time = distanceToTime(dist);
     if (not(time > timeGate0)) return 0;
     if (not(time < timeGate1)) time = timeGate1;
@@ -341,6 +342,17 @@ struct WaveformView {
     waveform = pulse->waveformView(xIndex, yIndex);
     return *this;
   }
+  uint32_t globalIndex() const noexcept {
+    /* uint32_t taskIndex = pulse->task - pulse->binFile->tasks.data(); */
+    uint32_t pulseIndex = pulse->pulseHeader.pulseIndex;
+    uint32_t xCount = pulse->binFile->fileHeader.xDetectorCount;
+    uint32_t yCount = pulse->binFile->fileHeader.yDetectorCount;
+    uint32_t sampleCount = pulse->pulseHeader.samplesPerTimeBin;
+    uint32_t waveformIndex =
+        xIndex * yCount * sampleCount + yIndex * sampleCount + sampleIndex;
+    uint32_t waveformCount = xCount * yCount * sampleCount;
+    return pulseIndex * waveformCount + waveformIndex;  // TODO Account for task
+  }
   std::string printString() const {
     std::ostringstream stream;
     int taskIndex = pulse->task - pulse->binFile->tasks.data();
@@ -368,9 +380,10 @@ struct WaveformView {
 
 struct VoxelGridReconstruction {
   VoxelGrid grid;
-  py::array_t<double> scatteredPhotonsArray;
-  py::array_t<double> remainingPhotonsArray;
+  py::array_t<double> scatteredArray;
+  py::array_t<double> remainingArray;
   py::array_t<int> numWaveformsArray;
+  std::shared_ptr<WaveformHistory> waveformHistory;
 
   VoxelGridReconstruction(
       Eigen::Vector3d minPoint,
@@ -379,30 +392,40 @@ struct VoxelGridReconstruction {
     grid.bound.points[0] = minPoint.cast<float>();
     grid.bound.points[1] = maxPoint.cast<float>();
     grid.count = count;
-    scatteredPhotonsArray = py::array_t<double>(
+    scatteredArray = py::array_t<double>(
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
-    remainingPhotonsArray = py::array_t<double>(
+    remainingArray = py::array_t<double>(
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
     numWaveformsArray = py::array_t<int>(
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
+    /*
+    waveformHistory = std::make_shared<WaveformHistory>();
+    waveformHistory->resize(grid);
+     */
   }
 
   void addWaveform(WaveformView waveform) {
-    auto scatteredPhotons = scatteredPhotonsArray.mutable_unchecked<3>();
-    auto remainingPhotons = remainingPhotonsArray.mutable_unchecked<3>();
+    auto scattered = scatteredArray.mutable_unchecked<3>();
+    auto remaining = remainingArray.mutable_unchecked<3>();
     auto numWaveforms = numWaveformsArray.mutable_unchecked<3>();
     auto org = waveform.rayOrigin.cast<float>();
     auto dir = waveform.rayDirection.cast<float>();
+    uint32_t w = waveform.globalIndex();
     grid.traverse(org, dir, [&](float tmin, float tmax, Eigen::Vector3i index) {
       int i = index[0];
       int j = index[1];
       int k = index[2];
-      double R = waveform.integratedIntensity(tmin, INFINITY);
-      double S = waveform.integratedIntensity(tmin, tmax);
+      double a = waveform.cumulativeIntensityAt(tmin);
+      double b = waveform.cumulativeIntensityAt(tmax);
+      double c = waveform.cumulativeIntensityAt(INFINITY);
+      double R = c - a; // waveform.integratedIntensity(tmin, INFINITY);
+      double S = b - a; // waveform.integratedIntensity(tmin, tmax);
+      double T = c; // waveform.cumulativeIntensityAt(INFINITY);
       if (R > 0) {
-        scatteredPhotons(i, j, k) += std::fmin(S / R, 1.0);
-        remainingPhotons(i, j, k) += R;
+        scattered(i, j, k) += std::fmin(S / R, 1.0);
+        remaining(i, j, k) += std::fmin(R / T, 1.0);
         numWaveforms(i, j, k) += 1;
+        /* (*waveformHistory)[index].push(w); */
       }
     });
   }
@@ -677,20 +700,28 @@ PYBIND11_MODULE(d5lidar, module) {
             py::ssize_t(self.waveform.size()), self.waveform.data(), obj);
       });
 
-  py::class_<VoxelGridReconstruction>(module, "VoxelGridReconstruction")
+  py::class_<WaveformHistory, std::shared_ptr<WaveformHistory>>(
+      module, "WaveformHistory")
+      .def("__call__", [](py::object obj, int x, int y, int z) {
+        auto& self = obj.cast<WaveformHistory&>();
+        auto& rec = self[Eigen::Vector3i(x, y, z)];
+        return py::array_t<int32_t>(
+            py::ssize_t(rec.num), &rec.waveforms[0], obj);
+      });
+  py::class_<VoxelGridReconstruction, std::shared_ptr<VoxelGridReconstruction>>(
+      module, "VoxelGridReconstruction")
       .def(
           py::init<Eigen::Vector3d, Eigen::Vector3d, Eigen::Vector3i>(),
           "minPoint"_a, "maxPoint"_a, "count"_a)
       .def_readonly(
-          "scatteredPhotons", &VoxelGridReconstruction::scatteredPhotonsArray,
-          "The total number of scattered photons at the time of intersection "
+          "scatteredFraction", &VoxelGridReconstruction::scatteredArray,
+          "The fraction of scattered photons at the time of intersection "
           "with a given voxel.")
       .def_readonly(
-          "remainingPhotons", &VoxelGridReconstruction::remainingPhotonsArray,
-          "The total number of remaining photons at the time of intersection "
+          "remainingFraction", &VoxelGridReconstruction::remainingArray,
+          "The fraction of remaining photons at the time of intersection "
           "with a given voxel.")
-      .def_readonly(
-          "numWaveforms", &VoxelGridReconstruction::numWaveformsArray,
-          "The number of waveforms that have intersected a given voxel.")
+      .def_readonly("numWaveforms", &VoxelGridReconstruction::numWaveformsArray)
+      /*.def_readonly("waveformHistory", &VoxelGridReconstruction::waveformHistory)*/
       .def("addWaveform", &VoxelGridReconstruction::addWaveform);
 }

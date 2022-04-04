@@ -1,3 +1,5 @@
+#pragma once
+
 #include <Eigen/Geometry>
 
 struct VoxelGrid {
@@ -72,7 +74,7 @@ struct VoxelGrid {
   }
 
   template <typename Func>
-  void traverse(Vec3f org, Vec3f dir, Func&& func) {
+  void traverse(Vec3f org, Vec3f dir, Func&& func) const {
     Vec3i index;
     if (bound.contains(org))
       index = coordToIndex(org);
