@@ -8,7 +8,7 @@
 
 class WaveformHistory {
  public:
-  static constexpr int32_t MaxWaveforms = 31;
+  static constexpr int32_t MaxWaveforms = 50;
   struct Record {
     int32_t waveforms[MaxWaveforms] = {};
     int32_t num = 0;
