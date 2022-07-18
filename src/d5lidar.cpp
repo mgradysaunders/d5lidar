@@ -25,6 +25,7 @@ using namespace py::literals;
 #include "WaveformHistory.h"
 
 constexpr double speedOfLight = 299792458;
+constexpr double speedOfLightInAir = speedOfLight / 1.0003;
 
 template <size_t N>
 static std::string charsToString(const char (&arr)[N]) {
@@ -244,8 +245,12 @@ struct WaveformView {
         rayDirection(pulse->rayDirection(x, y)) {}
   int size() const { return waveform.size(); }
   double getitem(int index) const { return waveform[index]; }
-  double distanceToTime(double dist) const { return dist / speedOfLight * 2; }
-  double timeToDistance(double time) const { return time * speedOfLight / 2; }
+  double distanceToTime(double dist) const {
+    return dist / speedOfLightInAir * 2;
+  }
+  double timeToDistance(double time) const {
+    return time * speedOfLightInAir / 2;
+  }
   double minDistance() const {
     return timeToDistance(pulse->pulseHeader.timeGateStart);
   }
@@ -270,7 +275,7 @@ struct WaveformView {
     int n = waveform.size();
     double pulseTime = pulse->pulseHeader.pulseTime;
     double timeGate0 = pulse->pulseHeader.timeGateStart;
-    double timeGate1 = pulse->pulseHeader.timeGateStop;  
+    double timeGate1 = pulse->pulseHeader.timeGateStop;
     double time = distanceToTime(dist);
     if (not(time > timeGate0)) return 0;
     if (not(time < timeGate1)) time = timeGate1;
@@ -378,14 +383,14 @@ struct WaveformView {
   }
 };
 
-struct VoxelGridReconstruction {
+struct VoxelGridRecon {
   VoxelGrid grid;
   py::array_t<double> scatteredArray;
   py::array_t<double> remainingArray;
   py::array_t<int> numWaveformsArray;
   std::shared_ptr<WaveformHistory> waveformHistory;
 
-  VoxelGridReconstruction(
+  VoxelGridRecon(
       Eigen::Vector3d minPoint,
       Eigen::Vector3d maxPoint,
       Eigen::Vector3i count) {
@@ -404,6 +409,33 @@ struct VoxelGridReconstruction {
      */
   }
 
+  void addWaveforms(TaskView& task) {
+    PulseView from = {task.binFile,
+                      task.task,
+                      task.binFile->loadPulseHeader(*task.task, 0),
+                      task.task->pulseCount,
+                      1,
+                      {}};
+    PulseView::Sentinel to;
+    size_t N = task.task->pulseCount;
+    size_t n = 0;
+    for (; from != to; ++from) {
+      addWaveforms(from);
+      n += 1;
+      if (n % 1000 == 0 or n == N) {
+        double percent = n / double(N) * 100;
+        std::cerr << "\r\e[0K";
+        std::cerr << percent << "%";
+      }
+    }
+    std::cerr << std::endl;
+  }
+
+  void addWaveforms(PulseView& pulse) {
+    WaveformView waveform = {&pulse, 0, 0, 0};
+    for (; !waveform.done; ++waveform) addWaveform(waveform);
+  }
+
   void addWaveform(WaveformView waveform) {
     auto scattered = scatteredArray.mutable_unchecked<3>();
     auto remaining = remainingArray.mutable_unchecked<3>();
@@ -418,9 +450,9 @@ struct VoxelGridReconstruction {
       double a = waveform.cumulativeIntensityAt(tmin);
       double b = waveform.cumulativeIntensityAt(tmax);
       double c = waveform.cumulativeIntensityAt(INFINITY);
-      double R = c - a; // waveform.integratedIntensity(tmin, INFINITY);
-      double S = b - a; // waveform.integratedIntensity(tmin, tmax);
-      double T = c; // waveform.cumulativeIntensityAt(INFINITY);
+      double R = c - a;  // waveform.integratedIntensity(tmin, INFINITY);
+      double S = b - a;  // waveform.integratedIntensity(tmin, tmax);
+      double T = c;      // waveform.cumulativeIntensityAt(INFINITY);
       if (R > 0) {
         scattered(i, j, k) += std::fmin(S / R, 1.0);
         remaining(i, j, k) += std::fmin(R / T, 1.0);
@@ -428,6 +460,36 @@ struct VoxelGridReconstruction {
         /* (*waveformHistory)[index].push(w); */
       }
     });
+  }
+
+  std::tuple<int, py::array_t<float>, py::array_t<int32_t>> intersect(
+      Eigen::Vector3f org, Eigen::Vector3f dir) {
+    std::vector<std::pair<float, float>> params;
+    std::vector<Eigen::Vector3i> indices;
+    grid.traverse(org, dir, [&](float tmin, float tmax, Eigen::Vector3i index) {
+      params.push_back({tmin, tmax});
+      indices.push_back(index);
+    });
+    py::array_t<float> paramsArr({py::ssize_t(indices.size()), py::ssize_t(2)});
+    py::array_t<int32_t> indicesArr(
+        {py::ssize_t(indices.size()), py::ssize_t(3)});
+    auto paramsArrAcc = paramsArr.mutable_unchecked<2>();
+    auto indicesArrAcc = indicesArr.mutable_unchecked<2>();
+    for (size_t i = 0; i < indices.size(); i++) {
+      paramsArrAcc(i, 0) = params[i].first;
+      paramsArrAcc(i, 1) = params[i].second;
+      indicesArrAcc(i, 0) = indices[i][0];
+      indicesArrAcc(i, 1) = indices[i][1];
+      indicesArrAcc(i, 2) = indices[i][2];
+    }
+    return std::make_tuple(params.size(), paramsArr, indicesArr);
+  }
+
+  std::tuple<int, py::array_t<float>, py::array_t<int32_t>> intersect(
+      WaveformView waveform) {
+    return intersect(
+        waveform.rayOrigin.cast<float>(),  //
+        waveform.rayDirection.cast<float>());
   }
 };
 
@@ -708,20 +770,67 @@ PYBIND11_MODULE(d5lidar, module) {
         return py::array_t<int32_t>(
             py::ssize_t(rec.num), &rec.waveforms[0], obj);
       });
-  py::class_<VoxelGridReconstruction, std::shared_ptr<VoxelGridReconstruction>>(
-      module, "VoxelGridReconstruction")
+  py::class_<VoxelGridRecon, std::shared_ptr<VoxelGridRecon>>(
+      module, "VoxelGrid")
       .def(
           py::init<Eigen::Vector3d, Eigen::Vector3d, Eigen::Vector3i>(),
           "minPoint"_a, "maxPoint"_a, "count"_a)
       .def_readonly(
-          "scatteredFraction", &VoxelGridReconstruction::scatteredArray,
+          "scatteredFraction", &VoxelGridRecon::scatteredArray,
           "The fraction of scattered photons at the time of intersection "
           "with a given voxel.")
       .def_readonly(
-          "remainingFraction", &VoxelGridReconstruction::remainingArray,
+          "remainingFraction", &VoxelGridRecon::remainingArray,
           "The fraction of remaining photons at the time of intersection "
           "with a given voxel.")
-      .def_readonly("numWaveforms", &VoxelGridReconstruction::numWaveformsArray)
-      /*.def_readonly("waveformHistory", &VoxelGridReconstruction::waveformHistory)*/
-      .def("addWaveform", &VoxelGridReconstruction::addWaveform);
+      .def_readonly("numWaveforms", &VoxelGridRecon::numWaveformsArray)
+      .def(
+          "addWaveforms",
+          [](VoxelGridRecon& self, TaskView& task) { self.addWaveforms(task); },
+          "task"_a,
+          "Add all waveforms in a task to the reconstruction. This might take "
+          "a while!")
+      .def(
+          "addWaveforms",
+          [](VoxelGridRecon& self, PulseView& pulse) {
+            self.addWaveforms(pulse);
+          },
+          "pulse"_a, "Add all waveforms in a pulse to the reconstruction.")
+      .def(
+          "addWaveform", &VoxelGridRecon::addWaveform, "waveform"_a,
+          "Add a waveform to the reconstruction.")
+      .def(
+          "intersect",
+          [](VoxelGridRecon& self,  //
+             Eigen::Vector3d org, Eigen::Vector3d dir) {
+            return self.intersect(org.cast<float>(), dir.cast<float>());
+          },
+          "rayOrg"_a, "rayDir"_a,
+          "Traverse the grid. If N voxels are intersected, returns a shape (N, "
+          "2) array of the min/max ray parameters and a shape (N, 3) array of "
+          "the voxel indices.")
+      .def(
+          "intersect",
+          [](VoxelGridRecon& self, WaveformView waveform) {
+            return self.intersect(waveform);
+          },
+          "waveform"_a)
+      .def(
+          "voxelCenter",
+          [](VoxelGridRecon& self, Eigen::Vector3i index) {
+            return self.grid.getVoxelCenter(index);
+          },
+          "index"_a, "Get the voxel center coordinate.")
+      .def(
+          "voxelBoundMin",
+          [](VoxelGridRecon& self, Eigen::Vector3i index) {
+            return self.grid.getVoxelBound(index).min();
+          },
+          "index"_a, "Get the voxel bound minimum coordinate.")
+      .def(
+          "voxelBoundMax",
+          [](VoxelGridRecon& self, Eigen::Vector3i index) {
+            return self.grid.getVoxelBound(index).max();
+          },
+          "index"_a, "Get the voxel bound maximum coordinate.");
 }
