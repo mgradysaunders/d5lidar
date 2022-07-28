@@ -385,6 +385,9 @@ struct WaveformView {
 
 struct VoxelGridRecon {
   VoxelGrid grid;
+  bool trackMinMax = false;
+  py::array_t<float> minScatteredArray;
+  py::array_t<float> maxScatteredArray;
   py::array_t<double> scatteredArray;
   py::array_t<double> remainingArray;
   py::array_t<int> numWaveformsArray;
@@ -393,16 +396,43 @@ struct VoxelGridRecon {
   VoxelGridRecon(
       Eigen::Vector3d minPoint,
       Eigen::Vector3d maxPoint,
-      Eigen::Vector3i count) {
+      Eigen::Vector3i count,
+      bool trackMinMax)
+      : trackMinMax(trackMinMax) {
     grid.bound.points[0] = minPoint.cast<float>();
     grid.bound.points[1] = maxPoint.cast<float>();
     grid.count = count;
+    if (trackMinMax) {
+      minScatteredArray = py::array_t<float>(
+          {py::ssize_t(count[0]), py::ssize_t(count[1]),
+           py::ssize_t(count[2])});
+      maxScatteredArray = py::array_t<float>(
+          {py::ssize_t(count[0]), py::ssize_t(count[1]),
+           py::ssize_t(count[2])});
+
+      auto minScattered = minScatteredArray.mutable_unchecked<3>();
+      auto maxScattered = maxScatteredArray.mutable_unchecked<3>();
+      for (int i = 0; i < count[0]; i++)
+        for (int j = 0; j < count[1]; j++)
+          for (int k = 0; k < count[2]; k++)
+            minScattered(i, j, k) = std::numeric_limits<float>::quiet_NaN();
+      for (int i = 0; i < count[0]; i++)
+        for (int j = 0; j < count[1]; j++)
+          for (int k = 0; k < count[2]; k++)
+            maxScattered(i, j, k) = std::numeric_limits<float>::quiet_NaN();
+    } else {
+      minScatteredArray =
+          py::array_t<float>({py::ssize_t(1), py::ssize_t(1), py::ssize_t(1)});
+      maxScatteredArray =
+          py::array_t<float>({py::ssize_t(1), py::ssize_t(1), py::ssize_t(1)});
+    }
     scatteredArray = py::array_t<double>(
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
     remainingArray = py::array_t<double>(
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
     numWaveformsArray = py::array_t<int>(
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
+
     /*
     waveformHistory = std::make_shared<WaveformHistory>();
     waveformHistory->resize(grid);
@@ -438,6 +468,8 @@ struct VoxelGridRecon {
 
   void addWaveform(WaveformView waveform) {
     auto scattered = scatteredArray.mutable_unchecked<3>();
+    auto minScattered = minScatteredArray.mutable_unchecked<3>();
+    auto maxScattered = maxScatteredArray.mutable_unchecked<3>();
     auto remaining = remainingArray.mutable_unchecked<3>();
     auto numWaveforms = numWaveformsArray.mutable_unchecked<3>();
     auto org = waveform.rayOrigin.cast<float>();
@@ -457,6 +489,12 @@ struct VoxelGridRecon {
         scattered(i, j, k) += std::fmin(S / R, 1.0);
         remaining(i, j, k) += std::fmin(R / T, 1.0);
         numWaveforms(i, j, k) += 1;
+        if (trackMinMax) {
+          minScattered(i, j, k) =
+              std::fmin(minScattered(i, j, k), scattered(i, j, k));
+          maxScattered(i, j, k) =
+              std::fmax(maxScattered(i, j, k), scattered(i, j, k));
+        }
         /* (*waveformHistory)[index].push(w); */
       }
     });
@@ -773,8 +811,16 @@ PYBIND11_MODULE(d5lidar, module) {
   py::class_<VoxelGridRecon, std::shared_ptr<VoxelGridRecon>>(
       module, "VoxelGrid")
       .def(
-          py::init<Eigen::Vector3d, Eigen::Vector3d, Eigen::Vector3i>(),
-          "minPoint"_a, "maxPoint"_a, "count"_a)
+          py::init<Eigen::Vector3d, Eigen::Vector3d, Eigen::Vector3i, bool>(),
+          "minPoint"_a, "maxPoint"_a, "count"_a, "trackMinMax"_a = false)
+      .def_readonly(
+          "minScatteredFraction", &VoxelGridRecon::minScatteredArray,
+          "The min fraction of scattered photons at the time of intersection "
+          "with a given voxel.")
+      .def_readonly(
+          "maxScatteredFraction", &VoxelGridRecon::maxScatteredArray,
+          "The max fraction of scattered photons at the time of intersection "
+          "with a given voxel.")
       .def_readonly(
           "scatteredFraction", &VoxelGridRecon::scatteredArray,
           "The fraction of scattered photons at the time of intersection "
