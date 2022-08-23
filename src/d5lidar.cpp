@@ -225,6 +225,20 @@ struct PulseView {
   std::vector<double> waveformArray;
 };
 
+template <typename Values>
+static double CumulativeIntensity(const Values& values, int count, double t) {
+  if (t <= 0) return 0;
+  if (t >= 1) t = 1;
+  t *= count;
+  int i0 = std::max(0, std::min(int(t), count - 1));
+  int i1 = std::max(0, std::min(i0 + 1, count - 1));
+  t = t - i0;
+  double result =
+      (values[i0] + (1 - t) * values[i0] + t * values[i1]) * t * 0.5;
+  for (int i = 0; i < i0; i++) result += (values[i] + values[i + 1]) * 0.5;
+  return result;
+}
+
 struct WaveformView {
   PulseView* pulse = nullptr;
   int xIndex = 0;
@@ -279,15 +293,8 @@ struct WaveformView {
     double time = distanceToTime(dist);
     if (not(time > timeGate0)) return 0;
     if (not(time < timeGate1)) time = timeGate1;
-    double t = (time - timeGate0) / (timeGate1 - timeGate0) * n;
-    int i0 = std::max(0, std::min(int(t), n - 1));
-    int i1 = std::max(0, std::min(i0 + 1, n - 1));
-    t = t - i0;
-    double result =
-        (waveform[i0] + (1 - t) * waveform[i0] + t * waveform[i1]) * t * 0.5;
-    for (int i = 0; i < i0; i++)
-      result += (waveform[i] + waveform[i + 1]) * 0.5;
-    return result;
+    return CumulativeIntensity(
+        waveform, n, (time - timeGate0) / (timeGate1 - timeGate0));
   }
   double integratedIntensity(double dist0, double dist1) const {
     return cumulativeIntensityAt(dist1) - cumulativeIntensityAt(dist0);
@@ -474,7 +481,6 @@ struct VoxelGridRecon {
     auto numWaveforms = numWaveformsArray.mutable_unchecked<3>();
     auto org = waveform.rayOrigin.cast<float>();
     auto dir = waveform.rayDirection.cast<float>();
-    uint32_t w = waveform.globalIndex();
     grid.traverse(org, dir, [&](float tmin, float tmax, Eigen::Vector3i index) {
       int i = index[0];
       int j = index[1];
@@ -495,7 +501,42 @@ struct VoxelGridRecon {
           maxScattered(i, j, k) =
               std::fmax(maxScattered(i, j, k), scattered(i, j, k));
         }
-        /* (*waveformHistory)[index].push(w); */
+      }
+    });
+  }
+
+  void addWaveformExplicit(
+      Eigen::Vector3f point0,
+      Eigen::Vector3f point1,
+      const std::vector<float>& counts) {
+    auto scattered = scatteredArray.mutable_unchecked<3>();
+    auto minScattered = minScatteredArray.mutable_unchecked<3>();
+    auto maxScattered = maxScatteredArray.mutable_unchecked<3>();
+    auto remaining = remainingArray.mutable_unchecked<3>();
+    auto numWaveforms = numWaveformsArray.mutable_unchecked<3>();
+    auto org = point0;
+    auto dir = point1 - point0;
+    grid.traverse(org, dir, [&](float tmin, float tmax, Eigen::Vector3i index) {
+      int i = index[0];
+      int j = index[1];
+      int k = index[2];
+      int n = counts.size();
+      double a = CumulativeIntensity(counts, n, tmin);
+      double b = CumulativeIntensity(counts, n, tmax);
+      double c = CumulativeIntensity(counts, n, INFINITY);
+      double R = c - a;  // waveform.integratedIntensity(tmin, INFINITY);
+      double S = b - a;  // waveform.integratedIntensity(tmin, tmax);
+      double T = c;      // waveform.cumulativeIntensityAt(INFINITY);
+      if (R > 0) {
+        scattered(i, j, k) += std::fmin(S / R, 1.0);
+        remaining(i, j, k) += std::fmin(R / T, 1.0);
+        numWaveforms(i, j, k) += 1;
+        if (trackMinMax) {
+          minScattered(i, j, k) =
+              std::fmin(minScattered(i, j, k), scattered(i, j, k));
+          maxScattered(i, j, k) =
+              std::fmax(maxScattered(i, j, k), scattered(i, j, k));
+        }
       }
     });
   }
@@ -844,6 +885,10 @@ PYBIND11_MODULE(d5lidar, module) {
           "pulse"_a, "Add all waveforms in a pulse to the reconstruction.")
       .def(
           "addWaveform", &VoxelGridRecon::addWaveform, "waveform"_a,
+          "Add a waveform to the reconstruction.")
+      .def(
+          "addWaveformExplicit", &VoxelGridRecon::addWaveformExplicit,
+          "point0"_a, "point1"_a, "counts"_a,
           "Add a waveform to the reconstruction.")
       .def(
           "intersect",
