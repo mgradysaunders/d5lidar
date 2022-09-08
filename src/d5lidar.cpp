@@ -397,6 +397,7 @@ struct VoxelGridRecon {
   py::array_t<float> maxScatteredArray;
   py::array_t<double> scatteredArray;
   py::array_t<double> remainingArray;
+  py::array_t<double> weightsArray;
   py::array_t<int> numWaveformsArray;
   std::shared_ptr<WaveformHistory> waveformHistory;
 
@@ -437,6 +438,8 @@ struct VoxelGridRecon {
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
     remainingArray = py::array_t<double>(
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
+    weightsArray = py::array_t<double>(
+        {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
     numWaveformsArray = py::array_t<int>(
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
 
@@ -473,11 +476,12 @@ struct VoxelGridRecon {
     for (; !waveform.done; ++waveform) addWaveform(waveform);
   }
 
-  void addWaveform(WaveformView waveform) {
+  void addWaveform(WaveformView waveform, float weight = 1) {
     auto scattered = scatteredArray.mutable_unchecked<3>();
     auto minScattered = minScatteredArray.mutable_unchecked<3>();
     auto maxScattered = maxScatteredArray.mutable_unchecked<3>();
     auto remaining = remainingArray.mutable_unchecked<3>();
+    auto weights = weightsArray.mutable_unchecked<3>();
     auto numWaveforms = numWaveformsArray.mutable_unchecked<3>();
     auto org = waveform.rayOrigin.cast<float>();
     auto dir = waveform.rayDirection.cast<float>();
@@ -492,8 +496,9 @@ struct VoxelGridRecon {
       double S = b - a;  // waveform.integratedIntensity(tmin, tmax);
       double T = c;      // waveform.cumulativeIntensityAt(INFINITY);
       if (R > 0) {
-        scattered(i, j, k) += std::fmin(S / R, 1.0);
-        remaining(i, j, k) += std::fmin(R / T, 1.0);
+        scattered(i, j, k) += weight * std::fmin(S / R, 1.0);
+        remaining(i, j, k) += weight * std::fmin(R / T, 1.0);
+        weights(i, j, k) += weight;
         numWaveforms(i, j, k) += 1;
         if (trackMinMax) {
           minScattered(i, j, k) =
@@ -508,11 +513,13 @@ struct VoxelGridRecon {
   void addWaveformExplicit(
       Eigen::Vector3f point0,
       Eigen::Vector3f point1,
-      const std::vector<float>& counts) {
+      const std::vector<float>& counts,
+      float weight = 1) {
     auto scattered = scatteredArray.mutable_unchecked<3>();
     auto minScattered = minScatteredArray.mutable_unchecked<3>();
     auto maxScattered = maxScatteredArray.mutable_unchecked<3>();
     auto remaining = remainingArray.mutable_unchecked<3>();
+    auto weights = weightsArray.mutable_unchecked<3>();
     auto numWaveforms = numWaveformsArray.mutable_unchecked<3>();
     auto org = point0;
     auto dir = point1 - point0;
@@ -528,8 +535,9 @@ struct VoxelGridRecon {
       double S = b - a;  // waveform.integratedIntensity(tmin, tmax);
       double T = c;      // waveform.cumulativeIntensityAt(INFINITY);
       if (R > 0) {
-        scattered(i, j, k) += std::fmin(S / R, 1.0);
-        remaining(i, j, k) += std::fmin(R / T, 1.0);
+        scattered(i, j, k) += weight * std::fmin(S / R, 1.0);
+        remaining(i, j, k) += weight * std::fmin(R / T, 1.0);
+        weights(i, j, k) += weight;
         numWaveforms(i, j, k) += 1;
         if (trackMinMax) {
           minScattered(i, j, k) =
@@ -539,6 +547,21 @@ struct VoxelGridRecon {
         }
       }
     });
+  }
+
+  void divideWeights() {
+    auto scattered = scatteredArray.mutable_unchecked<3>();
+    auto minScattered = minScatteredArray.mutable_unchecked<3>();
+    auto maxScattered = maxScatteredArray.mutable_unchecked<3>();
+    auto remaining = remainingArray.mutable_unchecked<3>();
+    auto weights = weightsArray.mutable_unchecked<3>();
+    for (py::ssize_t i = 0; i < scattered.shape(0); i++)
+      for (py::ssize_t j = 0; j < scattered.shape(1); j++)
+        for (py::ssize_t k = 0; k < scattered.shape(2); k++)
+          if (weights(i, j, k) > 0) {
+            scattered(i, j, k) /= weights(i, j, k);
+            remaining(i, j, k) /= weights(i, j, k);
+          }
   }
 
   std::tuple<int, py::array_t<float>, py::array_t<int32_t>> intersect(
@@ -871,6 +894,7 @@ PYBIND11_MODULE(d5lidar, module) {
           "The fraction of remaining photons at the time of intersection "
           "with a given voxel.")
       .def_readonly("numWaveforms", &VoxelGridRecon::numWaveformsArray)
+      .def("divideWeights", &VoxelGridRecon::divideWeights)
       .def(
           "addWaveforms",
           [](VoxelGridRecon& self, TaskView& task) { self.addWaveforms(task); },
@@ -885,10 +909,10 @@ PYBIND11_MODULE(d5lidar, module) {
           "pulse"_a, "Add all waveforms in a pulse to the reconstruction.")
       .def(
           "addWaveform", &VoxelGridRecon::addWaveform, "waveform"_a,
-          "Add a waveform to the reconstruction.")
+          "weight"_a = 1.0f, "Add a waveform to the reconstruction.")
       .def(
           "addWaveformExplicit", &VoxelGridRecon::addWaveformExplicit,
-          "point0"_a, "point1"_a, "counts"_a,
+          "point0"_a, "point1"_a, "counts"_a, "weight"_a = 1.0f,
           "Add a waveform to the reconstruction.")
       .def(
           "intersect",
