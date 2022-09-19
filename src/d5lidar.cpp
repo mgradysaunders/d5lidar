@@ -1,4 +1,5 @@
 #include <iomanip>
+#include <random>
 
 #include <Eigen/Geometry>
 #include <pybind11/eigen.h>
@@ -392,24 +393,29 @@ struct WaveformView {
 
 struct VoxelGridRecon {
   VoxelGrid grid;
+#if 0
   bool trackMinMax = false;
   py::array_t<float> minScatteredArray;
   py::array_t<float> maxScatteredArray;
+#endif
   py::array_t<double> scatteredArray;
   py::array_t<double> remainingArray;
-  py::array_t<double> weightsArray;
-  py::array_t<int> numWaveformsArray;
+  py::array_t<double> numWaveformsArray;
   std::shared_ptr<WaveformHistory> waveformHistory;
+  double thetaStddev = 0.02;
+  int thetaSamples = 1;
 
   VoxelGridRecon(
       Eigen::Vector3d minPoint,
       Eigen::Vector3d maxPoint,
       Eigen::Vector3i count,
-      bool trackMinMax)
-      : trackMinMax(trackMinMax) {
+      double thetaStddev,
+      int thetaSamples)
+      : thetaStddev(thetaStddev), thetaSamples(thetaSamples) {
     grid.bound.points[0] = minPoint.cast<float>();
     grid.bound.points[1] = maxPoint.cast<float>();
     grid.count = count;
+#if 0
     if (trackMinMax) {
       minScatteredArray = py::array_t<float>(
           {py::ssize_t(count[0]), py::ssize_t(count[1]),
@@ -434,11 +440,10 @@ struct VoxelGridRecon {
       maxScatteredArray =
           py::array_t<float>({py::ssize_t(1), py::ssize_t(1), py::ssize_t(1)});
     }
+#endif
     scatteredArray = py::array_t<double>(
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
     remainingArray = py::array_t<double>(
-        {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
-    weightsArray = py::array_t<double>(
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
     numWaveformsArray = py::array_t<int>(
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
@@ -476,92 +481,116 @@ struct VoxelGridRecon {
     for (; !waveform.done; ++waveform) addWaveform(waveform);
   }
 
-  void addWaveform(WaveformView waveform, float weight = 1) {
+  void addWaveform(WaveformView waveform) {
     auto scattered = scatteredArray.mutable_unchecked<3>();
+#if 0
     auto minScattered = minScatteredArray.mutable_unchecked<3>();
     auto maxScattered = maxScatteredArray.mutable_unchecked<3>();
+#endif
     auto remaining = remainingArray.mutable_unchecked<3>();
-    auto weights = weightsArray.mutable_unchecked<3>();
     auto numWaveforms = numWaveformsArray.mutable_unchecked<3>();
     auto org = waveform.rayOrigin.cast<float>();
     auto dir = waveform.rayDirection.cast<float>();
-    grid.traverse(org, dir, [&](float tmin, float tmax, Eigen::Vector3i index) {
-      int i = index[0];
-      int j = index[1];
-      int k = index[2];
-      double a = waveform.cumulativeIntensityAt(tmin);
-      double b = waveform.cumulativeIntensityAt(tmax);
-      double c = waveform.cumulativeIntensityAt(INFINITY);
-      double R = c - a;  // waveform.integratedIntensity(tmin, INFINITY);
-      double S = b - a;  // waveform.integratedIntensity(tmin, tmax);
-      double T = c;      // waveform.cumulativeIntensityAt(INFINITY);
-      if (R > 0) {
-        scattered(i, j, k) += weight * std::fmin(S / R, 1.0);
-        remaining(i, j, k) += weight * std::fmin(R / T, 1.0);
-        weights(i, j, k) += weight;
-        numWaveforms(i, j, k) += 1;
-        if (trackMinMax) {
-          minScattered(i, j, k) =
-              std::fmin(minScattered(i, j, k), scattered(i, j, k));
-          maxScattered(i, j, k) =
-              std::fmax(maxScattered(i, j, k), scattered(i, j, k));
-        }
-      }
-    });
+    auto basis =
+        Eigen::Quaternionf::FromTwoVectors(Eigen::Vector3f(0, 0, 1), dir)
+            .matrix();
+    std::random_device dev;
+    std::normal_distribution<float> thetaDistr(0, thetaStddev);
+    std::uniform_real_distribution<float> phiDistr(0, 2 * M_PI);
+    float invAngleSamples = 1.0f / thetaSamples;
+    float theta = 0;
+    float phi = 0;
+    for (int s = 0; s < thetaSamples; s++) {
+      Eigen::Vector3f angleDir = {
+          std::sin(theta) * std::cos(phi),  //
+          std::sin(theta) * std::sin(phi), std::cos(theta)};
+      angleDir = basis * angleDir;
+      grid.traverse(
+          org, dir, [&](float tmin, float tmax, Eigen::Vector3i index) {
+            int i = index[0];
+            int j = index[1];
+            int k = index[2];
+            double a = waveform.cumulativeIntensityAt(tmin);
+            double b = waveform.cumulativeIntensityAt(tmax);
+            double c = waveform.cumulativeIntensityAt(INFINITY);
+            double R = c - a;  // waveform.integratedIntensity(tmin, INFINITY);
+            double S = b - a;  // waveform.integratedIntensity(tmin, tmax);
+            double T = c;      // waveform.cumulativeIntensityAt(INFINITY);
+            if (R > 0) {
+              scattered(i, j, k) += invAngleSamples * std::fmin(S / R, 1.0);
+              remaining(i, j, k) += invAngleSamples * std::fmin(R / T, 1.0);
+              numWaveforms(i, j, k) += invAngleSamples;
+#if 0
+              if (trackMinMax) {
+                minScattered(i, j, k) =
+                    std::fmin(minScattered(i, j, k), scattered(i, j, k));
+                maxScattered(i, j, k) =
+                    std::fmax(maxScattered(i, j, k), scattered(i, j, k));
+              }
+#endif
+            }
+          });
+      theta = thetaDistr(dev);  // Guarantee 0th is always aligned.
+      phi = phiDistr(dev);
+    }
   }
 
   void addWaveformExplicit(
       Eigen::Vector3f point0,
       Eigen::Vector3f point1,
-      const std::vector<float>& counts,
-      float weight = 1) {
+      const std::vector<float>& counts) {
     auto scattered = scatteredArray.mutable_unchecked<3>();
+#if 0
     auto minScattered = minScatteredArray.mutable_unchecked<3>();
     auto maxScattered = maxScatteredArray.mutable_unchecked<3>();
+#endif
     auto remaining = remainingArray.mutable_unchecked<3>();
-    auto weights = weightsArray.mutable_unchecked<3>();
     auto numWaveforms = numWaveformsArray.mutable_unchecked<3>();
     auto org = point0;
     auto dir = point1 - point0;
-    grid.traverse(org, dir, [&](float tmin, float tmax, Eigen::Vector3i index) {
-      int i = index[0];
-      int j = index[1];
-      int k = index[2];
-      int n = counts.size();
-      double a = CumulativeIntensity(counts, n, tmin);
-      double b = CumulativeIntensity(counts, n, tmax);
-      double c = CumulativeIntensity(counts, n, INFINITY);
-      double R = c - a;  // waveform.integratedIntensity(tmin, INFINITY);
-      double S = b - a;  // waveform.integratedIntensity(tmin, tmax);
-      double T = c;      // waveform.cumulativeIntensityAt(INFINITY);
-      if (R > 0) {
-        scattered(i, j, k) += weight * std::fmin(S / R, 1.0);
-        remaining(i, j, k) += weight * std::fmin(R / T, 1.0);
-        weights(i, j, k) += weight;
-        numWaveforms(i, j, k) += 1;
-        if (trackMinMax) {
-          minScattered(i, j, k) =
-              std::fmin(minScattered(i, j, k), scattered(i, j, k));
-          maxScattered(i, j, k) =
-              std::fmax(maxScattered(i, j, k), scattered(i, j, k));
-        }
-      }
-    });
-  }
-
-  void divideWeights() {
-    auto scattered = scatteredArray.mutable_unchecked<3>();
-    auto minScattered = minScatteredArray.mutable_unchecked<3>();
-    auto maxScattered = maxScatteredArray.mutable_unchecked<3>();
-    auto remaining = remainingArray.mutable_unchecked<3>();
-    auto weights = weightsArray.mutable_unchecked<3>();
-    for (py::ssize_t i = 0; i < scattered.shape(0); i++)
-      for (py::ssize_t j = 0; j < scattered.shape(1); j++)
-        for (py::ssize_t k = 0; k < scattered.shape(2); k++)
-          if (weights(i, j, k) > 0) {
-            scattered(i, j, k) /= weights(i, j, k);
-            remaining(i, j, k) /= weights(i, j, k);
-          }
+    auto basis =
+        Eigen::Quaternionf::FromTwoVectors(Eigen::Vector3f(0, 0, 1), dir)
+            .matrix();
+    std::random_device dev;
+    std::normal_distribution<float> thetaDistr(0, thetaStddev);
+    std::uniform_real_distribution<float> phiDistr(0, 2 * M_PI);
+    float invAngleSamples = 1.0f / thetaSamples;
+    float theta = 0;
+    float phi = 0;
+    for (int s = 0; s < thetaSamples; s++) {
+      Eigen::Vector3f angleDir = {
+          std::sin(theta) * std::cos(phi),  //
+          std::sin(theta) * std::sin(phi), std::cos(theta)};
+      angleDir = basis * angleDir;
+      grid.traverse(
+          org, angleDir, [&](float tmin, float tmax, Eigen::Vector3i index) {
+            int i = index[0];
+            int j = index[1];
+            int k = index[2];
+            int n = counts.size();
+            double a = CumulativeIntensity(counts, n, tmin);
+            double b = CumulativeIntensity(counts, n, tmax);
+            double c = CumulativeIntensity(counts, n, INFINITY);
+            double R = c - a;  // waveform.integratedIntensity(tmin, INFINITY);
+            double S = b - a;  // waveform.integratedIntensity(tmin, tmax);
+            double T = c;      // waveform.cumulativeIntensityAt(INFINITY);
+            if (R > 0) {
+              scattered(i, j, k) += invAngleSamples * std::fmin(S / R, 1.0);
+              remaining(i, j, k) += invAngleSamples * std::fmin(R / T, 1.0);
+              numWaveforms(i, j, k) += invAngleSamples;
+#if 0
+              if (trackMinMax) {
+                minScattered(i, j, k) =
+                    std::fmin(minScattered(i, j, k), scattered(i, j, k));
+                maxScattered(i, j, k) =
+                    std::fmax(maxScattered(i, j, k), scattered(i, j, k));
+              }
+#endif
+            }
+          });
+      theta = thetaDistr(dev);  // Guarantee 0th is always aligned.
+      phi = phiDistr(dev);
+    }
   }
 
   std::tuple<int, py::array_t<float>, py::array_t<int32_t>> intersect(
@@ -875,8 +904,11 @@ PYBIND11_MODULE(d5lidar, module) {
   py::class_<VoxelGridRecon, std::shared_ptr<VoxelGridRecon>>(
       module, "VoxelGrid")
       .def(
-          py::init<Eigen::Vector3d, Eigen::Vector3d, Eigen::Vector3i, bool>(),
-          "minPoint"_a, "maxPoint"_a, "count"_a, "trackMinMax"_a = false)
+          py::init<
+              Eigen::Vector3d, Eigen::Vector3d, Eigen::Vector3i, double, int>(),
+          "minPoint"_a, "maxPoint"_a, "count"_a, "thetaStddev"_a = 0.02,
+          "thetaSamples"_a = 1)
+#if 0
       .def_readonly(
           "minScatteredFraction", &VoxelGridRecon::minScatteredArray,
           "The min fraction of scattered photons at the time of intersection "
@@ -885,6 +917,7 @@ PYBIND11_MODULE(d5lidar, module) {
           "maxScatteredFraction", &VoxelGridRecon::maxScatteredArray,
           "The max fraction of scattered photons at the time of intersection "
           "with a given voxel.")
+#endif
       .def_readonly(
           "scatteredFraction", &VoxelGridRecon::scatteredArray,
           "The fraction of scattered photons at the time of intersection "
@@ -894,7 +927,6 @@ PYBIND11_MODULE(d5lidar, module) {
           "The fraction of remaining photons at the time of intersection "
           "with a given voxel.")
       .def_readonly("numWaveforms", &VoxelGridRecon::numWaveformsArray)
-      .def("divideWeights", &VoxelGridRecon::divideWeights)
       .def(
           "addWaveforms",
           [](VoxelGridRecon& self, TaskView& task) { self.addWaveforms(task); },
@@ -909,10 +941,10 @@ PYBIND11_MODULE(d5lidar, module) {
           "pulse"_a, "Add all waveforms in a pulse to the reconstruction.")
       .def(
           "addWaveform", &VoxelGridRecon::addWaveform, "waveform"_a,
-          "weight"_a = 1.0f, "Add a waveform to the reconstruction.")
+          "Add a waveform to the reconstruction.")
       .def(
           "addWaveformExplicit", &VoxelGridRecon::addWaveformExplicit,
-          "point0"_a, "point1"_a, "counts"_a, "weight"_a = 1.0f,
+          "point0"_a, "point1"_a, "counts"_a,
           "Add a waveform to the reconstruction.")
       .def(
           "intersect",
