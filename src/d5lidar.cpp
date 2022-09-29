@@ -228,7 +228,7 @@ struct PulseView {
 
 template <typename Values>
 static double CumulativeIntensity(const Values& values, int count, double t) {
-  if (t <= 0) return 0;
+  if (t <= 0 || std::isnan(t)) return 0;
   if (t >= 1) t = 1;
   t *= count;
   int i0 = std::max(0, std::min(int(t), count - 1));
@@ -529,9 +529,9 @@ struct VoxelGridRecon {
               numWaveforms(i, j, k) += invSamples;
             }
           });
-      offsetX = orgDistr(dev);
-      offsetY = orgDistr(dev);
-      theta = thetaDistr(dev);  // Guarantee 0th is always aligned.
+      if (orgStddev > 0) offsetX = orgDistr(dev);
+      if (orgStddev > 0) offsetY = orgDistr(dev);
+      if (thetaStddev > 0) theta = thetaDistr(dev);
       phi = phiDistr(dev);
     }
   }
@@ -545,9 +545,9 @@ struct VoxelGridRecon {
     auto numWaveforms = numWaveformsArray.mutable_unchecked<3>();
     auto org = point0;
     auto dir = point1 - point0;
-    auto basis =
-        Eigen::Quaternionf::FromTwoVectors(Eigen::Vector3f(0, 0, 1), dir)
-            .matrix();
+    auto basis = Eigen::Quaternionf::FromTwoVectors(
+                     Eigen::Vector3f(0, 0, 1), dir.normalized())
+                     .matrix();
     std::random_device dev;
     std::normal_distribution<float> orgDistr(0, orgStddev);
     std::normal_distribution<float> thetaDistr(0, thetaStddev);
@@ -557,6 +557,7 @@ struct VoxelGridRecon {
     float offsetY = 0;
     float theta = 0;
     float phi = 0;
+    float invNorm = 1.0f / dir.norm();
     for (int s = 0; s < samplesPerWaveform; s++) {
       Eigen::Vector3f sampleOrg = {offsetX, offsetY, 0};
       Eigen::Vector3f sampleDir = {
@@ -564,7 +565,6 @@ struct VoxelGridRecon {
           std::sin(theta) * std::sin(phi), std::cos(theta)};
       sampleOrg = basis * sampleOrg + org;
       sampleDir = basis * sampleDir;
-      sampleDir *= dir.norm();
       grid.traverse(
           sampleOrg, sampleDir,
           [&](float tmin, float tmax, Eigen::Vector3i index) {
@@ -572,9 +572,9 @@ struct VoxelGridRecon {
             int j = index[1];
             int k = index[2];
             int n = counts.size();
-            double a = CumulativeIntensity(counts, n, tmin);
-            double b = CumulativeIntensity(counts, n, tmax);
-            double c = CumulativeIntensity(counts, n, INFINITY);
+            double a = CumulativeIntensity(counts, n, tmin * invNorm);
+            double b = CumulativeIntensity(counts, n, tmax * invNorm);
+            double c = CumulativeIntensity(counts, n, 1.0f);
             double R = c - a;  // waveform.integratedIntensity(tmin, INFINITY);
             double S = b - a;  // waveform.integratedIntensity(tmin, tmax);
             double T = c;      // waveform.cumulativeIntensityAt(INFINITY);
@@ -584,9 +584,9 @@ struct VoxelGridRecon {
               numWaveforms(i, j, k) += invSamples;
             }
           });
-      offsetX = orgDistr(dev);
-      offsetY = orgDistr(dev);
-      theta = thetaDistr(dev);  // Guarantee 0th is always aligned.
+      if (orgStddev > 0) offsetX = orgDistr(dev);
+      if (orgStddev > 0) offsetY = orgDistr(dev);
+      if (thetaStddev > 0) theta = thetaDistr(dev);
       phi = phiDistr(dev);
     }
   }
