@@ -451,6 +451,16 @@ struct VoxelGridRecon {
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
     numWaveformsArray = py::array_t<int>(
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
+    auto scattered = scatteredArray.mutable_unchecked<3>();
+    auto remaining = remainingArray.mutable_unchecked<3>();
+    auto numWaveforms = numWaveformsArray.mutable_unchecked<3>();
+    for (int i = 0; i < count[0]; i++)
+      for (int j = 0; j < count[1]; j++)
+        for (int k = 0; k < count[2]; k++) {
+          scattered(i, j, k) = 0;
+          remaining(i, j, k) = 0;
+          numWaveforms(i, j, k) = 0;
+        }
 
     /*
     waveformHistory = std::make_shared<WaveformHistory>();
