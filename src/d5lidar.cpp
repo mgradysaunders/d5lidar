@@ -887,7 +887,10 @@ PYBIND11_MODULE(d5lidar, module) {
           "intensity", &DiscreteReturn::intensity, "The intensity value.")
       .def_readonly(
           "waveformIndex", &DiscreteReturn::waveformIndex,
-          "The global waveform index associated with this return.");
+          "The global waveform index associated with this return.")
+      .def_readonly(
+          "voxelIndex", &DiscreteReturn::voxelIndex,
+          "The voxel index associated with this return.");
 #if 0
   py::class_<WaveformHistory, std::shared_ptr<WaveformHistory>>(
       module, "WaveformHistory")
