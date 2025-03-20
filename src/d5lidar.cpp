@@ -391,12 +391,20 @@ struct WaveformView {
   }
 };
 
+struct DiscreteReturn {
+ public:
+  Eigen::Vector3d position{};
+  double intensity{};
+  int64_t waveformIndex{};
+  Eigen::Vector3i voxelIndex{};
+};
+
 struct VoxelGridRecon {
   VoxelGrid grid;
   py::array_t<double> scatteredArray;
   py::array_t<double> remainingArray;
   py::array_t<int> numWaveformsArray;
-  py::array_t<int> numDiscreteReturnsArray;
+  std::vector<DiscreteReturn> discreteReturns{};
   double orgStddev = 0.0;
   double thetaStddev = 0.02;
   int samplesPerWaveform = 1;
@@ -420,19 +428,15 @@ struct VoxelGridRecon {
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
     numWaveformsArray = py::array_t<int>(
         {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
-    numDiscreteReturnsArray = py::array_t<int>(
-        {py::ssize_t(count[0]), py::ssize_t(count[1]), py::ssize_t(count[2])});
     auto scattered = scatteredArray.mutable_unchecked<3>();
     auto remaining = remainingArray.mutable_unchecked<3>();
     auto numWaveforms = numWaveformsArray.mutable_unchecked<3>();
-    auto numDiscreteReturns = numDiscreteReturnsArray.mutable_unchecked<3>();
     for (int i = 0; i < count[0]; i++)
       for (int j = 0; j < count[1]; j++)
         for (int k = 0; k < count[2]; k++) {
           scattered(i, j, k) = 0;
           remaining(i, j, k) = 0;
           numWaveforms(i, j, k) = 0;
-          numDiscreteReturns(i, j, k) = 0;
         }
   }
 
@@ -467,7 +471,6 @@ struct VoxelGridRecon {
     auto scattered = scatteredArray.mutable_unchecked<3>();
     auto remaining = remainingArray.mutable_unchecked<3>();
     auto numWaveforms = numWaveformsArray.mutable_unchecked<3>();
-    auto numDiscreteReturns = numDiscreteReturnsArray.mutable_unchecked<3>();
     auto org = waveform.rayOrigin.cast<float>();
     auto dir = waveform.rayDirection.cast<float>();
     auto basis =
@@ -513,13 +516,13 @@ struct VoxelGridRecon {
       if (thetaStddev > 0) theta = thetaDistr(dev);
       phi = phiDistr(dev);
     }
-    for (float d : waveform.findPeaks()) {
-      auto index = grid.coordToIndex(org + d * dir);
-      if (0 <= index[0] && index[0] < grid.count[0] &&  //
-          0 <= index[1] && index[1] < grid.count[1] &&  //
-          0 <= index[2] && index[2] < grid.count[2]) {
-        numDiscreteReturns(index[0], index[1], index[2]) += 1;
-      }
+    for (double d : waveform.findPeaks()) {
+      auto& discreteReturn{discreteReturns.emplace_back()};
+      discreteReturn.position = waveform.pointAt(d);
+      discreteReturn.intensity = waveform.intensityAt(d);
+      discreteReturn.waveformIndex = waveform.globalIndex();
+      discreteReturn.voxelIndex =
+          grid.coordToIndex(discreteReturn.position.cast<float>());
     }
   }
 
@@ -878,6 +881,13 @@ PYBIND11_MODULE(d5lidar, module) {
             py::ssize_t(self.waveform.size()), self.waveform.data(), obj);
       });
 
+  py::class_<DiscreteReturn>(module, "DiscreteReturn")
+      .def_readonly("position", &DiscreteReturn::position, "The position.")
+      .def_readonly(
+          "intensity", &DiscreteReturn::intensity, "The intensity value.")
+      .def_readonly(
+          "waveformIndex", &DiscreteReturn::waveformIndex,
+          "The global waveform index associated with this return.");
 #if 0
   py::class_<WaveformHistory, std::shared_ptr<WaveformHistory>>(
       module, "WaveformHistory")
@@ -904,8 +914,12 @@ PYBIND11_MODULE(d5lidar, module) {
           "remainingFraction", &VoxelGridRecon::remainingArray,
           "The fraction of remaining photons at the time of intersection "
           "with a given voxel.")
-      .def_readonly("numWaveforms", &VoxelGridRecon::numWaveformsArray)
-      .def_readonly("numDiscreteReturns", &VoxelGridRecon::numDiscreteReturnsArray)
+      .def_readonly(
+          "numWaveforms", &VoxelGridRecon::numWaveformsArray,
+          "The number of waveforms in each voxel.")
+      .def_readonly(
+          "discreteReturns", &VoxelGridRecon::discreteReturns,
+          "The discrete returns.")
       .def(
           "addWaveforms",
           [](VoxelGridRecon& self, TaskView& task) { self.addWaveforms(task); },
