@@ -25,7 +25,7 @@ struct VoxelGrid {
       for (int k = 1; k < 3; k++) {
         float tmink = (points[dirSignbit[k]][k] - org[k]) / dir[k],
               tmaxk = (points[!dirSignbit[k]][k] - org[k]) / dir[k];
-        if (not(tmin < tmaxk and tmax > tmink)) return false;
+        if (!(tmin < tmaxk && tmax > tmink)) return false;
         tmin = std::max(tmin, tmink);
         tmax = std::min(tmax, tmaxk);
       }
@@ -33,7 +33,7 @@ struct VoxelGrid {
     }
     [[nodiscard]] bool contains(const Vec3f& coord) const noexcept {
       for (int i = 0; i < 3; i++)
-        if (not(points[0][i] <= coord[i] and coord[i] <= points[1][i]))
+        if (!(points[0][i] <= coord[i] && coord[i] <= points[1][i]))
           return false;
       return true;
     }
@@ -94,7 +94,7 @@ struct VoxelGrid {
         for (int dim = 0; dim < 3; dim++) {
           Vec3i nextIndex = index;
           nextIndex[dim] += dir[dim] > 0 ? 1 : -1;
-          if (nextIndex[dim] <= -1 or nextIndex[dim] >= count[dim]) continue;
+          if (nextIndex[dim] <= -1 || nextIndex[dim] >= count[dim]) continue;
           if (getVoxelBound(nextIndex).rayCast(org, dir, tmin, tmax)) {
             index = nextIndex;
             return true;
@@ -102,7 +102,7 @@ struct VoxelGrid {
         }
         return false;
       };
-      if (not advanceToNext()) return;
+      if (!advanceToNext()) return;
     }
   }
 
