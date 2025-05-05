@@ -1,3 +1,4 @@
+#define _USE_MATH_DEFINES
 #include <iomanip>
 #include <random>
 
@@ -31,7 +32,7 @@ constexpr double speedOfLightInAir = speedOfLight / 1.0003;
 template <size_t N>
 static std::string charsToString(const char (&arr)[N]) {
   auto* end = &arr[0];
-  while (end != &arr[0] + N and *end != '\0') end++;
+  while (end != &arr[0] + N && *end != '\0') end++;
   return std::string(&arr[0], end);
 }
 
@@ -72,7 +73,7 @@ static void printMemberWithUnits(
 
 static void printMemberString(
     std::ostream& stream, const char* key, const std::string& value) {
-  if (not value.empty())
+  if (!value.empty())
     printMember(stream, key, "“" + value + "”", "\e[38;5;226m");
 }
 
@@ -81,7 +82,7 @@ struct TaskView {
   bool operator==(Sentinel) const {
     return task == binFile->tasks.data() + binFile->tasks.size();
   }
-  bool operator!=(Sentinel) const { return not operator==(Sentinel()); }
+  bool operator!=(Sentinel) const { return !operator==(Sentinel()); }
   TaskView& operator*() noexcept { return *this; }
   TaskView& operator++() noexcept {
     ++task;
@@ -123,7 +124,7 @@ struct PulseView {
   bool operator==(Sentinel) const {
     return pulseHeader.pulseIndex >= pulseLimit;
   }
-  bool operator!=(Sentinel) const { return not operator==(Sentinel()); }
+  bool operator!=(Sentinel) const { return !operator==(Sentinel()); }
   PulseView& operator*() noexcept { return *this; }
   PulseView& operator++() noexcept {
     pulseHeader.pulseIndex += pulseIncrement;
@@ -139,8 +140,8 @@ struct PulseView {
     return xSize * ySize * sSize;
   }
   EigenVectorView waveformView(int x, int y, int sampleIndex = 0) {
-    if (x < 0 or y < 0 or  //
-        x >= int(binFile->fileHeader.xDetectorCount) or
+    if (x < 0 || y < 0 || //
+        x >= int(binFile->fileHeader.xDetectorCount) ||
         y >= int(binFile->fileHeader.yDetectorCount))
       throw std::invalid_argument("Index out of range");
     if (waveformArray.empty())  // Loaded yet?
@@ -278,8 +279,8 @@ struct WaveformView {
     double timeGate0 = pulse->pulseHeader.timeGateStart;  //- pulseTime;
     double timeGate1 = pulse->pulseHeader.timeGateStop;   // - pulseTime;
     double time = distanceToTime(dist);
-    if (not(time > timeGate0)) return 0;
-    if (not(time < timeGate1)) return 0;
+    if (!(time > timeGate0)) return 0;
+    if (!(time < timeGate1)) return 0;
     double t = (time - timeGate0) / (timeGate1 - timeGate0) * n;
     int i0 = std::max(0, std::min(int(t), n - 1));
     int i1 = std::max(0, std::min(i0 + 1, n - 1));
@@ -292,8 +293,8 @@ struct WaveformView {
     double timeGate0 = pulse->pulseHeader.timeGateStart;
     double timeGate1 = pulse->pulseHeader.timeGateStop;
     double time = distanceToTime(dist);
-    if (not(time > timeGate0)) return 0;
-    if (not(time < timeGate1)) time = timeGate1;
+    if (!(time > timeGate0)) return 0;
+    if (!(time < timeGate1)) time = timeGate1;
     return CumulativeIntensity(
         waveform, n, (time - timeGate0) / (timeGate1 - timeGate0));
   }
@@ -308,7 +309,7 @@ struct WaveformView {
     double numer = 0;
     double denom = 0;
     for (int i = index - 2; i <= index + 2; i++)
-      if (i >= 0 and i < int(waveform.size())) {
+      if (i >= 0 && i < int(waveform.size())) {
         numer += waveform[i];
         denom += 1;
       }
@@ -321,7 +322,7 @@ struct WaveformView {
     return deriv;
   }
   std::vector<double> findPeaks(double threshold = 2) const {
-    if (not(threshold > 0))
+    if (!(threshold > 0))
       threshold = 0.25 * (*std::max_element(waveform.begin(), waveform.end()));
     double pulseTime = pulse->pulseHeader.pulseTime;
     double timeGate0 = pulse->pulseHeader.timeGateStart;  // - pulseTime;
@@ -331,14 +332,14 @@ struct WaveformView {
     std::vector<double> peaks;
     auto deriv = smoothDerivative();
     for (int i = 1; i < int(deriv.size()); i++)
-      if (deriv[i - 1] > 0 and deriv[i] < 0 and waveform[i] > threshold) {
+      if (deriv[i - 1] > 0 && deriv[i] < 0 && waveform[i] > threshold) {
         peaks.push_back(timeToDistance(timeGate0 + timeBinDuration * i));
       }
     return peaks;
   }
   struct Sentinel {};
   bool operator==(Sentinel) const noexcept { return done; }
-  bool operator!=(Sentinel) const noexcept { return not done; }
+  bool operator!=(Sentinel) const noexcept { return !done; }
   WaveformView& operator*() { return *this; }
   WaveformView& operator++() {
     xIndex++;
@@ -453,7 +454,7 @@ struct VoxelGridRecon {
     for (; from != to; ++from) {
       addWaveforms(from);
       n += 1;
-      if (n % 1000 == 0 or n == N) {
+      if (n % 1000 == 0 || n == N) {
         double percent = n / double(N) * 100;
         std::cerr << "\r\e[0K";
         std::cerr << percent << "%";

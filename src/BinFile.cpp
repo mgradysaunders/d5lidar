@@ -20,7 +20,7 @@ void BinFile::open(const std::string& filename) {
 
     // Read byte order, set the swap endian flag accordingly.
     fileRead(fileHeader.byteOrder);
-    if (fileHeader.byteOrder != 0 and fileHeader.byteOrder != 1) {
+    if (fileHeader.byteOrder != 0 && fileHeader.byteOrder != 1) {
       std::cerr << int(fileHeader.byteOrder) << std::endl;
       throw std::runtime_error(
           "Bad byte order, expected 0 (big endian) or 1 (little endian)");
@@ -106,7 +106,7 @@ std::vector<double> BinFile::loadPulse(
 void BinFile::fileRead(void* ptr, size_t num, size_t sz) {
   if (!fileStream_.read(static_cast<char*>(ptr), num * sz))
     throw std::runtime_error("Read failed: "s + strerror(errno));
-  if (swapEndian_ and sz > 1) {
+  if (swapEndian_ && sz > 1) {
     for (size_t i = 0; i < num; i++)
       std::reverse(
           static_cast<char*>(ptr) + (i + 0) * sz,
