@@ -9,7 +9,7 @@ project(
     LANGUAGES C CXX
     )
 
-# Set C++20.
+# Set C++17.
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -35,12 +35,22 @@ endif()
 #message(STATUS "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
 
 #find_package(Eigen3 REQUIRED)
-find_package(pybind11 REQUIRED)
+#find_package(pybind11 REQUIRED)
 find_package(Python COMPONENTS Development Interpreter REQUIRED)
 set(SITE_PACKAGES_DIR "python${Python_VERSION_MAJOR}.${Python_VERSION_MINOR}/site-packages")
 set(PYTHON_MODULE_DIR "${CMAKE_INSTALL_LIBDIR}/${SITE_PACKAGES_DIR}")
 message(STATUS "SITE_PACKAGES_DIR: ${SITE_PACKAGES_DIR}")
 message(STATUS "PYTHON_MODULE_DIR: ${PYTHON_MODULE_DIR}")
+
+include(FetchContent)
+set(FETCHCONTENT_QUIET FALSE)
+FetchContent_Declare(
+  "pybind11"
+  GIT_REPOSITORY https://github.com/pybind/pybind11.git
+  GIT_TAG "v3.0.0"
+  GIT_PROGRESS TRUE
+)
+FetchContent_MakeAvailable("pybind11")
 
 set(LIB_NAME d5lidar)
 pybind11_add_module(
